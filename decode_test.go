@@ -19,12 +19,14 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"gopkg.in/yaml.v3"
 	"io"
 	"math"
 	"reflect"
 	"strings"
 	"time"
+
+	. "gopkg.in/check.v1"
+	"gopkg.in/yaml.v3"
 )
 
 var unmarshalIntTest = 123
