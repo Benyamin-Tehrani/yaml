@@ -315,12 +315,25 @@ func (p *parser) mapping() *Node {
 // Config could be initialized in "builder" style for convenience:
 // NewDecodeOptions().KnownFields(true).UniqueFields(true)
 type DecodeOptions struct {
-	knownFields bool
-	uniqueKeys  bool
+	knownFields      bool
+	uniqueKeys       bool
+	listDecodeOption ListDecodeOptions
 }
 
+type ListDecodeOptions int
+
+const (
+	ListDecodeOverride ListDecodeOptions = iota
+	ListDecodeAppend
+	ListDecodeInsertFront
+)
+
 func NewDecodeOptions() *DecodeOptions {
-	return &DecodeOptions{knownFields: false, uniqueKeys: true}
+	return &DecodeOptions{
+		knownFields:      false,
+		uniqueKeys:       true,
+		listDecodeOption: ListDecodeOverride,
+	}
 }
 
 func (c *DecodeOptions) KnownFields(enabled bool) *DecodeOptions {
@@ -330,6 +343,11 @@ func (c *DecodeOptions) KnownFields(enabled bool) *DecodeOptions {
 
 func (c *DecodeOptions) UniqueFields(enabled bool) *DecodeOptions {
 	c.uniqueKeys = enabled
+	return c
+}
+
+func (c *DecodeOptions) ListDecodeOption(option ListDecodeOptions) *DecodeOptions {
+	c.listDecodeOption = option
 	return c
 }
 
@@ -752,37 +770,58 @@ func settableValueOf(i interface{}) reflect.Value {
 func (d *decoder) sequence(n *Node, out reflect.Value) (good bool) {
 	l := len(n.Content)
 
-	var iface reflect.Value
+	var tempOut reflect.Value
+	var et reflect.Type
 	switch out.Kind() {
 	case reflect.Slice:
-		out.Set(reflect.MakeSlice(out.Type(), l, l))
+		tempOut = reflect.MakeSlice(out.Type(), l, l)
+		et = tempOut.Type().Elem()
 	case reflect.Array:
 		if l != out.Len() {
 			failf(n.Line, n.Column, "invalid array: want %d elements but got %d", out.Len(), l)
 		}
+		et = out.Type().Elem()
 	case reflect.Interface:
 		// No type hints. Will have to use a generic sequence.
-		iface = out
-		out = settableValueOf(make([]interface{}, l))
+		tempOut = settableValueOf(make([]interface{}, l))
+		et = tempOut.Type().Elem()
 	default:
 		d.terror(n, seqTag, out)
 		return false
 	}
-	et := out.Type().Elem()
 
-	j := 0
+	finalLen := 0
 	for i := 0; i < l; i++ {
 		e := reflect.New(et).Elem()
 		if ok := d.unmarshal(n.Content[i], e); ok {
-			out.Index(j).Set(e)
-			j++
+			if out.Kind() == reflect.Array {
+				out.Index(finalLen).Set(e)
+			} else {
+				tempOut.Index(finalLen).Set(e)
+			}
+			finalLen++
 		}
 	}
-	if out.Kind() != reflect.Array {
-		out.Set(out.Slice(0, j))
-	}
-	if iface.IsValid() {
-		iface.Set(out)
+
+	switch out.Kind() {
+	case reflect.Slice:
+		switch d.options.listDecodeOption {
+		case ListDecodeAppend:
+			out.Set(reflect.AppendSlice(out, tempOut.Slice(0, finalLen)))
+		case ListDecodeInsertFront:
+			out.Set(reflect.AppendSlice(tempOut.Slice(0, finalLen), out))
+		case ListDecodeOverride:
+			fallthrough
+		default:
+			out.Set(tempOut.Slice(0, finalLen))
+		}
+	case reflect.Array:
+		// nothing to do here
+	case reflect.Interface:
+		out.Set(tempOut.Slice(0, finalLen))
+	default:
+		d.terror(n, seqTag, out)
+		return false
 	}
 	return true
 }
